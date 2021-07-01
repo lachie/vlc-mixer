@@ -332,7 +332,7 @@ fn vlc_entry_setup(vlc_set: vlc_set_cb, vlc_plugin: *c_void) !void {
 
     try m.init();
     try m.setOnModule(c.VLC_MODULE_NAME, .{ "panner" });
-    try m.setOnModule(c.VLC_MODULE_DESCRIPTION, .{ "LR audio panner" });
+    try m.setOnModule(c.VLC_MODULE_DESCRIPTION, .{ "audio channel panner / mixer" });
     try m.setOnModule(c.VLC_MODULE_CAPABILITY, .{ "audio filter" });
     try m.setOnModule(c.VLC_MODULE_SCORE, .{ @as(c_int, 1) });
 
