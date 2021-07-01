@@ -15,38 +15,20 @@ const c = @cImport({
 pub const vlc_set_cb = fn (?*c_void, ?*c_void, c_int, ...) callconv(.C) c_int;
 
 pub export fn vlc_entry__3_0_0f(maybe_vlc_set: ?vlc_set_cb, maybe_vlc: ?*c_void) c_int {
-    const stdout = std.io.getStdOut().writer();
-    stdout.print("hello {s}\n", .{"world"}) catch return -1;
-
-    if (maybe_vlc_set) |vlc_set| {
-        if (maybe_vlc) |vlc| {
-            stdout.print("about to set up {s}, {s}\n", .{ vlc_set, vlc }) catch return -1;
-            if (vlc_entry_setup(vlc_set, vlc)) |x| {
-                stdout.print("I did the setup\n", .{}) catch return -1;
-                return 0;
-            } else |err| {
-                stdout.print("error setting up {s}\n", .{err}) catch return -1;
-                return -1;
-            }
-        }
-    }
-
-    return -1;
+    vlc_entry_setup(maybe_vlc_set.?, maybe_vlc.?) catch return -1;
+    return 0;
 }
 
 pub fn OpenFilterC(p_this: [*c]c.vlc_object_t) callconv(.C) c_int {
+    // TODO use vlc logs
     const stdout = std.io.getStdOut().writer();
-    stdout.print("open filter c\n", .{}) catch return -1;
 
     if (OpenFilter(p_this)) |x| {
-        stdout.print("opened filter\n", .{}) catch return -1;
         return 0;
     } else |err| {
         stdout.print("error opening filter up {s}\n", .{err}) catch return -1;
         return -1;
     }
-
-    stdout.print("open filter c done\n", .{}) catch return -1;
     return 0;
 }
 
@@ -80,6 +62,8 @@ const Filter = struct {
 
     output_sample_size: u32,
 
+    // mixer: anytype //fn(in: anytype, out: anytype) void,
+
     fn initPtr(allocator: *Allocator, fmt_in: c.es_format_t, fmt_out: c.es_format_t) !*Filter {
         const filter = try allocator.create(Filter);
         filter.allocator = allocator;
@@ -100,45 +84,29 @@ const Filter = struct {
 
         filter.channels_ratio = @divTrunc(filter.channels_out.count(), filter.channels_in.count());
 
+        // filter.mixer = mix2m;
+
         return filter;
     }
 
     fn Convert(self: *Filter, in_block: *c.block_t ) ![*c]c.block_t {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("in the convert\n", .{});
-
         var out_block = try self.outputBlock(in_block);
 
-        comptime const fmt2 = AudioBitFormat(channels{ .left = true, .right = true });
-        comptime const fmt2Size = @sizeOf(fmt2);
+        // const fmt2 = AudioBitFormat(channels{ .left = true, .right = true });
+        // const src: [*]const fmt2 = @ptrCast([*]const fmt2, @alignCast(std.meta.alignment(fmt2), in_block.*.p_buffer));
+        // var dst: [*]fmt2 = @ptrCast([*]fmt2, @alignCast(std.meta.alignment(fmt2), out_block.*.p_buffer));
 
-        const src: [*]const fmt2 = @ptrCast([*]const fmt2, @alignCast(std.meta.alignment(fmt2), in_block.*.p_buffer));
-        var dst: [*]fmt2 = @ptrCast([*]fmt2, @alignCast(std.meta.alignment(fmt2), out_block.*.p_buffer));
+        const src = mix2m.castSrc(in_block.*.p_buffer);
+        var dst = mix2m.castDst(out_block.*.p_buffer);
 
         var i: u32 = 0;
         while(i < in_block.*.i_nb_samples) : (i += 1) {
-            try mix2(&src[i], &dst[i]);
+            // try self.mixer(&src[i], &dst[i]);
+            try mix2m.mix(&src[i], &dst[i]);
         }
 
         return out_block;
     }
-
-    // float *p_dest = (float *)p_out_buf->p_buffer;
-    // const float *p_src = (const float *)p_in_buf->p_buffer;
-    // for( int i = p_in_buf->i_nb_samples; i--; )
-    // {
-        // *p_dest++ = p_src[2] + 0.5f * p_src[0];
-        // *p_dest++ = p_src[2] + 0.5f * p_src[1];
-
-        // p_src += 3;
-
-        // if( p_filter->fmt_in.audio.i_physical_channels & AOUT_CHAN_LFE ) p_src++;
-    // }
-// }
-
-
-        // return out_block;
-    // }
 
     fn blockAlloc(self: *Filter, size: u32) ![*c]c.block_t {
         return c.block_Alloc(size);
@@ -152,8 +120,6 @@ const Filter = struct {
     }
 
     fn outputBlock(self: *Filter, in_block: [*c]c.block_t) ![*c]c.block_t {
-        const stdout = std.io.getStdOut().writer();
-
         if(in_block == null or in_block.*.i_nb_samples == 0) {
             return null;
         }
@@ -173,26 +139,28 @@ const Filter = struct {
     }
 };
 
-fn mix(in: []const f32) []f32 {
-    return &[_]f32{ in[0], in[1] };
+fn Mixer(comptime SrcT: type, comptime DstT: type) type {
+    return struct {
+        const Self = @This();
+        mix: fn(s: anytype, d: anytype) anyerror!void,
+
+        fn castSrc(comptime _: Self, src: anytype) [*]const SrcT {
+            return @ptrCast([*]const SrcT, @alignCast(std.meta.alignment(SrcT), src));
+        }
+        fn castDst(comptime _: Self, dst: anytype) [*]DstT {
+            return @ptrCast([*]DstT, @alignCast(std.meta.alignment(DstT), dst));
+        }
+    };
 }
 
-fn mix2(in: *const AudioBitFormat(channels{ .left = true, .right = true }), out: *AudioBitFormat(channels{.left=true, .right=true})) !void {
-    out.left = in.left * 0.1;
+const mix2m = Mixer(AudioBitFormat(channels{ .left = true, .right = true }), AudioBitFormat(channels{.left=true, .right=true})){ .mix = mix2 };
+
+fn mix2(in: anytype, out: anytype) !void {
+    out.left = in.left;
     out.right = in.right;
 
     return;
 }
-
-// #define AOUT_CHAN_CENTER            0x1
-// #define AOUT_CHAN_LEFT              0x2
-// #define AOUT_CHAN_RIGHT             0x4
-// #define AOUT_CHAN_REARCENTER        0x10
-// #define AOUT_CHAN_REARLEFT          0x20
-// #define AOUT_CHAN_REARRIGHT         0x40
-// #define AOUT_CHAN_MIDDLELEFT        0x100
-// #define AOUT_CHAN_MIDDLERIGHT       0x200
-// #define AOUT_CHAN_LFE               0x100
 
 const channels = packed struct {
     centre: bool = false,
@@ -290,22 +258,9 @@ fn AudioBitFormat(comptime ch: channels) type {
     return @Type(typeInfo);
 }
 
-// endianness?
-fn fourcc(comptime code: []const u8) u32 {
-    const fourccS = packed struct {
-        a: u8,
-        b: u8,
-        c: u8,
-        d: u8
-    };
-    return @bitCast(u32, fourccS{ .a = code[0], .b = code[1], .c = code[2], .d = code[3] });
-}
-const VLC_CODEC_FL32: u32 = fourcc("f32l");
+const VLC_CODEC_FL32: u32 = c.VLC_CODEC_FL32;
 
 fn OpenFilter(p_this: [*]c.vlc_object_t) !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("open filter zig\n", .{});
-
     const p_filter: [*c]c.filter_t = @ptrCast([*c]c.filter_t, @alignCast(std.meta.alignment(c.filter_t), p_this));
 
     const fmt_in = p_filter.*.fmt_in;
@@ -330,19 +285,7 @@ fn OpenFilter(p_this: [*]c.vlc_object_t) !void {
     p_filter.*.unnamed_0.pf_audio_filter = ConvertC;
 }
 
-fn castCString(str: []const u8) [*c]const u8 {
-    return @ptrCast([*c]const u8, @alignCast(std.meta.alignment(u8), str));
-}
-
 fn vlc_entry_setup(vlc_set: vlc_set_cb, vlc_plugin: *c_void) !void {
-    const stdout = std.io.getStdOut().writer();
-
-    //try stdout.print("ummmm {s}\n", @typeInfo(@TypeOf(stdout)));
-
-    try stdout.print("xxx {s}\n", stdout);
-    try stdout.print("start creating stuff\n", .{});
-    try stdout.print("module:\n", .{});
-
     var module: *c.module_t = undefined;
     var config: *c.module_config_t = undefined;
 
