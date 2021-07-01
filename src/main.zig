@@ -76,6 +76,8 @@ const Filter = struct {
         filter.channels_in = channels.from_vlc_physical_channels(filter.audio_in.i_physical_channels);
         filter.channels_out = channels.from_vlc_physical_channels(filter.audio_out.i_physical_channels);
 
+        try mix2m.canMixExact(filter.channels_in, filter.channels_out);
+
         filter.output_sample_size = @divTrunc(filter.audio_out.i_bitspersample * filter.audio_out.i_channels, 8);
 
         if (filter.output_sample_size == 0) {
@@ -139,7 +141,10 @@ const Filter = struct {
     }
 };
 
-fn Mixer(comptime SrcT: type, comptime DstT: type) type {
+fn Mixer(comptime srcCh: channels, comptime dstCh: channels) type {
+    const SrcT = AudioBitFormat(srcCh);
+    const DstT = AudioBitFormat(dstCh);
+
     return struct {
         const Self = @This();
         mix: fn (s: anytype, d: anytype) anyerror!void,
@@ -150,10 +155,17 @@ fn Mixer(comptime SrcT: type, comptime DstT: type) type {
         fn castDst(comptime _: Self, dst: anytype) [*]DstT {
             return @ptrCast([*]DstT, @alignCast(std.meta.alignment(DstT), dst));
         }
+        fn canMixExact(comptime _: Self, canSrcCh: channels, canDstCh: channels) !void {
+            if (!srcCh.eql(canSrcCh) and dstCh.eql(canDstCh)) {
+                return error.MixMismatch;
+            }
+        }
+
+        // TODO canMix(srcCh: channels, dstCh: channels): bool
     };
 }
 
-const mix2m = Mixer(AudioBitFormat(channels{ .left = true, .right = true }), AudioBitFormat(channels{ .left = true, .right = true })){ .mix = mix2 };
+const mix2m = Mixer(channels{ .left = true, .right = true }, channels{ .left = true, .right = true }){ .mix = mix2 };
 
 fn mix2(in: anytype, out: anytype) !void {
     out.left = in.left;
@@ -188,15 +200,8 @@ const channels = packed struct {
         return @popCount(u16, @bitCast(u16, ch));
     }
 
-    fn get(self: channels, offset: usize, chData: []const f32) []const f32 {
-        const channelCount = self.count();
-        return chData[offset * channelCount .. (offset + 1) * channelCount];
-    }
-
-    fn set(self: channels, offset: usize, chData: []f32, in: []const f32) void {
-        const channelCount = self.count();
-        std.mem.copy(f32, chData[offset * channelCount .. (offset + 1) * channelCount], in[0..channelCount]);
-        return;
+    fn eql(ch: channels, otherCh: channels) bool {
+        return @bitCast(u16, ch) == @bitCast(u16, otherCh);
     }
 };
 
